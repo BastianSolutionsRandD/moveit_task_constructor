@@ -225,6 +225,7 @@ void ComputeIK::onNewSolution(const SolutionBase& s) {
 }
 
 bool ComputeIK::canCompute() const {
+	ROS_WARN("ComputeIK::canCompute()");
 	return !upstream_solutions_.empty() || WrapperBase::canCompute();
 }
 
@@ -388,10 +389,14 @@ void ComputeIK::compute() {
 		req.contacts = true;
 		req.max_contacts = 1;
 		req.group_name = jmg->getName();
-		scene->checkCollision(req, res, *state);
+		auto colliding_scene = planning_scene::PlanningScene::clone(scene)
+		colliding_scene->setCurrentState(*state);
+		colliding_scene->checkSelfCollision(req, res);
 		solution.collision_free = ignore_collisions || !res.collision;
 		if (!res.contacts.empty()) {
 			solution.contact = res.contacts.begin()->second.front();
+			ROS_ERROR("ComputeIK found collision between %s and %s", solution.contact.body_name_1.c_str(),
+						solution.contact.body_name_2.c_str());
 		}
 
 		return solution.satisfies_constraints && solution.collision_free;
@@ -411,7 +416,10 @@ void ComputeIK::compute() {
 
 		size_t previous = ik_solutions.size();
 		bool succeeded = sandbox_state.setFromIK(jmg, target_pose, link->getName(), remaining_time, is_valid);
-
+		ROS_WARN("setFromIK success status: %s", succeeded ? "true" : "false");
+		ROS_WARN("setFromIK size before/after: %ld/%ld", previous, ik_solutions.size());
+		// if (ik_solutions.size() - previous > 1)
+		// 	return;
 		auto now = std::chrono::steady_clock::now();
 		remaining_time -= std::chrono::duration<double>(now - start_time).count();
 		start_time = now;
@@ -423,16 +431,23 @@ void ComputeIK::compute() {
 			SubTrajectory solution;
 			solution.setComment(s.comment());
 			std::copy(frame_markers.begin(), frame_markers.end(), std::back_inserter(solution.markers()));
-
+			ROS_WARN("ik_solutions index = %ld", i);
+			for (const auto& value : ik_solutions[i].joint_positions) {
+				ROS_WARN("joint state: %.5f", value);
+			}
 			if (ik_solutions[i].collision_free && ik_solutions[i].satisfies_constraints)
 				// compute cost as distance to compare_pose
 				solution.setCost(s.cost() + jmg->distance(ik_solutions[i].joint_positions.data(), compare_pose.data()));
 			else if (!ik_solutions[i].collision_free) {  // solution was in collision
+				ROS_WARN("ik_solutions[%ld] is in collision", i);
 				std::stringstream ss;
-				ss << "Collision between '" << ik_solutions[i].contact.body_name_1 << "' and '"
-				   << ik_solutions[i].contact.body_name_2 << "'";
-				solution.markAsFailure(ss.str());
+				// ss << "Collision between '" << ik_solutions[i].contact.body_name_1 << "' and something else";
+				//    << ik_solutions[i].contact.body_name_2 << "'";
+				solution.markAsFailure("Collision detected");
+				// ROS_WARN("Skipping spawning");
+				// return;
 			} else if (!ik_solutions[i].satisfies_constraints) {  // solution was violating constraints
+				ROS_WARN("IK solution is violating constraints");
 				solution.markAsFailure("Constraints violated");
 			}
 			// set scene's robot state
@@ -446,6 +461,7 @@ void ComputeIK::compute() {
 			// ik target link placement
 			std::copy(eef_markers.begin(), eef_markers.end(), std::back_inserter(solution.markers()));
 
+			ROS_WARN("Spawning ComputeIK solution with ik_solutions[%ld]", i);
 			spawn(std::move(state), std::move(solution));
 		}
 
@@ -474,8 +490,10 @@ void ComputeIK::compute() {
 			marker.color = tint_color;
 		std::copy(eef_markers.begin(), eef_markers.end(), std::back_inserter(solution.markers()));
 
+		ROS_WARN("Spawning empty solution in ComputeIK");
 		spawn(InterfaceState(scene), std::move(solution));
 	}
+	ROS_WARN("Exiting ComputeIK");
 }
 }  // namespace stages
 }  // namespace task_constructor
